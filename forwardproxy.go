@@ -74,6 +74,9 @@ type Handler struct {
 	// How long to wait before timing out initial TCP connections.
 	DialTimeout caddy.Duration `json:"dial_timeout,omitempty"`
 
+	// Specify the DNS used for dial. This is only valid when upstream is not set.
+	DNS string `json:"dns,omitempty"`
+
 	// Optionally configure an upstream proxy to use.
 	Upstream string `json:"upstream,omitempty"`
 
@@ -82,6 +85,8 @@ type Handler struct {
 
 	// Ports to be allowed to connect to (if non-empty).
 	AllowedPorts []int `json:"allowed_ports,omitempty"`
+
+	resolver *net.Resolver
 
 	httpTransport *http.Transport
 
@@ -161,6 +166,22 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.dialContext = dialer.DialContext
 	h.httpTransport.DialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
 		return h.dialContextCheckACL(ctx, network, address)
+	}
+
+	dnsDialer := &net.Dialer{
+		Timeout:   5 * time.Second,
+		DualStack: true,
+	}
+
+	if h.DNS != "" {
+		h.resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return dnsDialer.DialContext(ctx, "udp", h.DNS)
+			},
+		}
+	} else {
+		h.resolver = &net.Resolver{}
 	}
 
 	if h.Upstream != "" {
@@ -454,6 +475,18 @@ func (h Handler) servePacFile(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+func (h Handler) lookupIP(host string) ([]net.IP, error) {
+	addrs, err := h.resolver.LookupIPAddr(context.Background(), host)
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]net.IP, len(addrs))
+	for i, ia := range addrs {
+		ips[i] = ia.IP
+	}
+	return ips, nil
+}
+
 // dialContextCheckACL enforces Access Control List and calls fp.DialContext
 func (h Handler) dialContextCheckACL(ctx context.Context, network, hostPort string) (net.Conn, error) {
 	var conn net.Conn
@@ -499,7 +532,7 @@ match:
 	}
 
 	// in case IP was provided, net.LookupIP will simply return it
-	IPs, err := net.LookupIP(host)
+	IPs, err := h.lookupIP(host)
 	if err != nil {
 		// return nil, &proxyError{S: fmt.Sprintf("Lookup of %s failed: %v", host, err),
 		// Code: http.StatusBadGateway}

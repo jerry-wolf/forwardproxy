@@ -3,6 +3,7 @@ package forwardproxy
 import (
 	"encoding/base64"
 	"log"
+	"net"
 	"strconv"
 	"strings"
 
@@ -131,6 +132,22 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.Err("dial_timeout cannot be negative.")
 			}
 			h.DialTimeout = caddy.Duration(timeout)
+		case "dns":
+			if len(args) != 1 {
+				return d.ArgErr()
+			}
+			dns := args[0]
+			if !strings.Contains(dns, ":") {
+				dns += ":53"
+			}
+			host, _, err := net.SplitHostPort(dns)
+			if err != nil {
+				return d.Err("can't parse DNS: " + err.Error())
+			}
+			if ip := net.ParseIP(host); ip == nil {
+				return d.Err("can't parse DNS: DNS is not a vaild IP.")
+			}
+			h.DNS = args[0]
 		case "upstream":
 			if len(args) != 1 {
 				return d.ArgErr()
